@@ -1,0 +1,66 @@
+cabal-version:       3.0
+name:                breadcrumbs
+version:             0.1.0.0
+synopsis:            See README for more info
+description:
+    See README for more info.
+    See [README.md](https://github.com/PPKFS/breadcrumbs#breadcrumbs) for more details.
+homepage:            https://github.com/PPKFS/breadcrumbs
+bug-reports:         https://github.com/PPKFS/breadcrumbs/issues
+license:             MIT
+license-file:        LICENSE
+author:              Avery
+maintainer:          Avery <thecommunistduck@hotmail.co.uk>
+copyright:           2022 Avery
+category:            prelude
+build-type:          Simple
+extra-doc-files:     README.md
+                     CHANGELOG.md
+
+source-repository head
+  type:                git
+  location:            https://github.com/PPKFS/breadcrumbs.git
+
+common common-options
+  build-depends:
+    base
+    , effectful
+    , effectful-th
+    , aeson
+    , text
+    , microlens
+    , microlens-th
+    , microlens-mtl
+    , unordered-containers
+    , bytestring
+    , base16-bytestring >= 1.0.0.0
+    , random
+
+  ghc-options:         -Wall
+                       -Wcompat
+                       -Widentities
+                       -Wincomplete-uni-patterns
+                       -Wincomplete-record-updates
+                       -Wredundant-constraints
+                       -Wnoncanonical-monad-instances
+  if impl(ghc >= 8.2)
+    ghc-options:       -fhide-source-paths
+  if impl(ghc >= 8.4)
+    ghc-options:       -Wmissing-export-lists
+                       -Wpartial-fields
+  if impl(ghc >= 8.8)
+    ghc-options:       -Wmissing-deriving-strategies
+                       -fwrite-ide-info
+                       -hiedir=.hie
+  if impl(ghc >= 8.10)
+    ghc-options:       -Wunused-packages
+  default-language:    Haskell2010
+  default-extensions:  TypeApplications
+                       ConstraintKinds
+                       FlexibleContexts
+                       TypeOperators
+
+library
+  import:              common-options
+  hs-source-dirs:      src
+  exposed-modules:     Breadcrumbs
