@@ -35,6 +35,8 @@ common common-options
     , bytestring
     , base16-bytestring >= 1.0.0.0
     , random
+    , http-client
+    , time
 
   ghc-options:         -Wall
                        -Wcompat
