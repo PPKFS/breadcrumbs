@@ -8,21 +8,22 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Breadcrumbs where
 
+import Control.Exception (catch, SomeException)
 import Control.Monad ( replicateM, forM_, void )
-import Data.Aeson
+import Data.Aeson ( object, Value, encode, KeyValue((.=)) )
 import Data.Aeson.Key ( fromText )
 import Data.Aeson.Types ( listValue )
-import Data.ByteString.Lazy ( ByteString )
+import Data.List (findIndex)
 import Data.Text ( Text )
 import Data.Time ( NominalDiffTime )
 import Data.Time.Clock.POSIX ( POSIXTime, getPOSIXTime )
 import Effectful ( type (:>), Effect, MonadIO(liftIO), Eff, IOE )
 import Effectful.Dispatch.Dynamic ( localSeqUnlift, reinterpret )
-import Effectful.State.Static.Shared
-    ( State, evalState, gets, modify )
+import Effectful.State.Static.Shared ( State, evalState, gets, modify )
 import Effectful.TH ( makeEffect )
 import Lens.Micro ( ix, (%~) )
 import Lens.Micro.Extras ( preview )
@@ -33,12 +34,11 @@ import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Char8 as BS.Char8
 import qualified Data.Text as T hiding (map)
 import qualified Network.HTTP.Client as HTTP
-import Control.Exception (catch, SomeException)
 
 data Breadcrumbs :: Effect where
-  WithSpan :: Text -> Text -> m a -> Breadcrumbs m a
+  WithSpan :: Text -> Text -> (SpanID -> m a) -> Breadcrumbs m a
   AddAnnotation :: Text -> Breadcrumbs m ()
-  AddTag :: ToJSON b => Maybe b -> Text -> Breadcrumbs m ()
+  AddTagTo :: SpanID -> Text -> Text -> Breadcrumbs m ()
   GetCurrentSpan :: Breadcrumbs m (Maybe Span)
   Flush :: Breadcrumbs m ()
   GetTraceId :: Breadcrumbs m TraceID
@@ -53,7 +53,7 @@ data Span = Span
   , _spanTimestamp :: POSIXTime
   , _spanService :: Text
   , _spanAnnotations :: [(Text, POSIXTime)]
-  , _spanTags :: [(Text, ByteString)]
+  , _spanTags :: [(Text, Text)]
   } deriving stock (Show)
 
 data BreadcrumbTrail = BreadcrumbTrail
@@ -66,6 +66,14 @@ makeEffect ''Breadcrumbs
 makeLenses ''Span
 makeLenses ''BreadcrumbTrail
 
+withSpan' ::
+  Breadcrumbs :> es
+  => Text
+  -> Text
+  -> Eff es a
+  -> Eff es a
+withSpan' sService sName inner = withSpan sService sName (const inner)
+
 runBreadcrumbs ::
   IOE :> es
   => Maybe TraceID
@@ -75,19 +83,27 @@ runBreadcrumbs mbId = reinterpret (\e -> do
     rootId' <- maybe (liftIO randomTraceID) pure mbId
     evalState (BreadcrumbTrail [] [] rootId') e ) $ \env -> \case
   WithSpan sService sName inner -> do
-    addSpan sService sName
-    a <- localSeqUnlift env $ \unlift -> unlift inner
+    i <- addSpan sService sName
+    a <- localSeqUnlift env $ \unlift -> unlift (inner i)
     popSpan
     pure a
   AddAnnotation anno -> do
     ts <- getCPUTime
     modify (spans . ix 0 . spanAnnotations %~ ((anno, ts):))
-  AddTag mbMetadata tagName -> do
-    modify (spans . ix 0 . spanTags %~ ((tagName, maybe "" encode mbMetadata):))
+  AddTagTo spanId' tagName metadata -> do
+    i <- getIndexFor spanId'
+    modify (spans . ix i . spanTags %~ ((tagName, metadata):))
   GetCurrentSpan -> do
     gets $ preview (spans . ix 0)
   GetTraceId -> gets _rootId
   Flush -> pushToZipkin
+
+getIndexFor :: SpanID -> Eff (State BreadcrumbTrail : es) Int
+getIndexFor sId = do
+  s <- gets _spans
+  case findIndex (\Span{..} -> _spanId == sId) s of
+    Nothing -> error $ "Could not find index " <> show sId
+    Just x -> pure x
 
 getCPUTime :: IOE :> es => Eff (State BreadcrumbTrail : es) NominalDiffTime
 getCPUTime = liftIO getPOSIXTime
@@ -119,13 +135,13 @@ finaliseSpan sp = do
             [ "timestamp" .= microSeconds ts
             , "value" .= n
             ]) (_spanAnnotations sp)
-        , "tags" .= object (map (\(n, bs) -> fromText n .= decode @Value bs) (_spanTags sp))
+        , "tags" .= object (map (\(n, bs) -> fromText n .= bs) (_spanTags sp))
         ]
         ++
         maybe [] (\s -> ["parentId" .= encodeSpanID s]) (_spanParent sp)
   modify (completedSpans %~ (v:))
 
-addSpan :: IOE :> es => Text -> Text -> Eff (State BreadcrumbTrail : es) ()
+addSpan :: IOE :> es => Text -> Text -> Eff (State BreadcrumbTrail : es) SpanID
 addSpan serviceName sName = do
   now <- getCPUTime
   sId <- liftIO randomSpanID
@@ -140,6 +156,7 @@ addSpan serviceName sName = do
         , _spanTags = []
         }
   modify (spans %~ (s:))
+  pure sId
 
 randomID :: Int -> IO BS.ByteString
 randomID len = BS.pack <$> replicateM len randomIO
