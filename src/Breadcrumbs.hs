@@ -1,19 +1,19 @@
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Breadcrumbs where
 
 import Control.Exception (catch, SomeException)
-import Control.Monad ( replicateM, forM_, void )
+import Control.Monad ( replicateM, void, when )
 import Data.Aeson ( object, Value, encode, KeyValue((.=)) )
 import Data.Aeson.Key ( fromText )
 import Data.Aeson.Types ( listValue )
@@ -25,7 +25,7 @@ import Effectful ( type (:>), Effect, MonadIO(liftIO), Eff, IOE )
 import Effectful.Dispatch.Dynamic ( localSeqUnlift, reinterpret )
 import Effectful.State.Static.Shared ( State, evalState, gets, modify )
 import Effectful.TH ( makeEffect )
-import Lens.Micro ( ix, (%~) )
+import Lens.Micro ( ix, (%~), (.~) )
 import Lens.Micro.Extras ( preview )
 import Lens.Micro.TH ( makeLenses )
 import System.Random ( randomIO )
@@ -37,11 +37,14 @@ import qualified Network.HTTP.Client as HTTP
 
 data Breadcrumbs :: Effect where
   WithSpan :: Text -> Text -> (SpanID -> m a) -> Breadcrumbs m a
-  AddAnnotation :: Text -> Breadcrumbs m ()
-  AddTagTo :: SpanID -> Text -> Text -> Breadcrumbs m ()
+  AddAnnotationTo :: Maybe SpanID -> Text -> Breadcrumbs m ()
+  AddTagTo :: Maybe SpanID -> Text -> Text -> Breadcrumbs m ()
   GetCurrentSpan :: Breadcrumbs m (Maybe Span)
+  ModifySpan :: (Span -> Span) -> Breadcrumbs m ()
   Flush :: Breadcrumbs m ()
+  IgnoreSpan :: Breadcrumbs m ()
   GetTraceId :: Breadcrumbs m TraceID
+  WithoutSpan :: m a -> Breadcrumbs m a
 
 newtype SpanID = SpanID BS.ByteString deriving newtype (Eq, Ord, Show)
 newtype TraceID = TraceID BS.ByteString deriving newtype (Eq, Ord, Show)
@@ -60,6 +63,7 @@ data BreadcrumbTrail = BreadcrumbTrail
   { _spans :: [Span]
   , _completedSpans :: [Value]
   , _rootId :: TraceID
+  , _enableSpans :: Bool
   }
 
 makeEffect ''Breadcrumbs
@@ -81,22 +85,51 @@ runBreadcrumbs ::
   -> Eff es a
 runBreadcrumbs mbId = reinterpret (\e -> do
     rootId' <- maybe (liftIO randomTraceID) pure mbId
-    evalState (BreadcrumbTrail [] [] rootId') e ) $ \env -> \case
+    evalState (BreadcrumbTrail [] [] rootId' True) e ) $ \env -> \case
   WithSpan sService sName inner -> do
-    i <- addSpan sService sName
-    a <- localSeqUnlift env $ \unlift -> unlift (inner i)
-    popSpan
-    pure a
-  AddAnnotation anno -> do
+    e <- gets _enableSpans
+    if e then
+      do
+        i <- addSpan sService sName
+        a <- localSeqUnlift env $ \unlift -> unlift (inner i)
+        popSpan (Just i)
+        pure a
+      else do
+        mbSpan <- gets $ preview (spans . ix 0)
+        maybe (error "cannot ignore a span if we have no span")
+          (\s -> localSeqUnlift env $ \unlift -> unlift (inner (_spanId s))) mbSpan
+
+  AddAnnotationTo mbSpanId anno -> do
+    i <- maybe (pure 0) getIndexFor mbSpanId
     ts <- getCPUTime
-    modify (spans . ix 0 . spanAnnotations %~ ((anno, ts):))
-  AddTagTo spanId' tagName metadata -> do
-    i <- getIndexFor spanId'
+    modify (spans . ix i . spanAnnotations %~ ((anno, ts):))
+  AddTagTo mbSpanId tagName metadata -> do
+    i <- maybe (pure 0) getIndexFor mbSpanId
     modify (spans . ix i . spanTags %~ ((tagName, metadata):))
   GetCurrentSpan -> do
     gets $ preview (spans . ix 0)
   GetTraceId -> gets _rootId
   Flush -> pushToZipkin
+  IgnoreSpan -> popSpan Nothing
+  ModifySpan f -> modify (spans . ix 0 %~ f)
+  WithoutSpan inner -> do
+    eS <- gets _enableSpans
+    modify (enableSpans .~ False)
+    a <- localSeqUnlift env $ \unlift -> unlift inner
+    modify (enableSpans .~ eS)
+    pure a
+
+addAnnotationToSpan :: Breadcrumbs :> es => SpanID -> Text -> Eff es ()
+addAnnotationToSpan sId = addAnnotationTo (Just sId)
+
+addAnnotation :: Breadcrumbs :> es => Text -> Eff es ()
+addAnnotation = addAnnotationTo Nothing
+
+addTagToSpan :: Breadcrumbs :> es => SpanID -> Text -> Text -> Eff es ()
+addTagToSpan sId = addTagTo (Just sId)
+
+addTag :: Breadcrumbs :> es => Text -> Text -> Eff es ()
+addTag = addTagTo Nothing
 
 getIndexFor :: SpanID -> Eff (State BreadcrumbTrail : es) Int
 getIndexFor sId = do
@@ -111,11 +144,16 @@ getCPUTime = liftIO getPOSIXTime
 microSeconds :: NominalDiffTime -> Int
 microSeconds = round . (* 1000000)
 
-popSpan :: IOE :> es => Eff (State BreadcrumbTrail : es) ()
-popSpan = do
+popSpan :: IOE :> es => Maybe SpanID -> Eff (State BreadcrumbTrail : es) ()
+popSpan mbSpanToPop = do
   (sp :: Maybe Span) <- gets $ preview (spans . ix 0)
-  modify (spans %~ tail)
-  forM_ sp finaliseSpan
+  case sp of
+    Nothing -> pure ()
+    Just sp' -> when (maybe True (_spanId sp' ==) mbSpanToPop) $ do
+      modify (spans %~ tail)
+      case mbSpanToPop of
+        Nothing -> pure () -- discard
+        Just _ -> finaliseSpan sp'
 
 finaliseSpan :: IOE :> es => Span -> Eff (State BreadcrumbTrail : es) ()
 finaliseSpan sp = do
