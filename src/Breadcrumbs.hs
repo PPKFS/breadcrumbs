@@ -34,11 +34,12 @@ import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Char8 as BS.Char8
 import qualified Data.Text as T hiding (map)
 import qualified Network.HTTP.Client as HTTP
+import Data.Text.Display
 
 data Breadcrumbs :: Effect where
   WithSpan :: Text -> Text -> (SpanID -> m a) -> Breadcrumbs m a
   AddAnnotationTo :: Maybe SpanID -> Text -> Breadcrumbs m ()
-  AddTagTo :: Maybe SpanID -> Text -> Text -> Breadcrumbs m ()
+  AddTagTo :: Display a => Maybe SpanID -> Text -> a -> Breadcrumbs m ()
   GetCurrentSpan :: Breadcrumbs m (Maybe Span)
   ModifySpan :: (Span -> Span) -> Breadcrumbs m ()
   Flush :: Breadcrumbs m ()
@@ -105,7 +106,7 @@ runBreadcrumbs mbId = reinterpret (\e -> do
     modify (spans . ix i . spanAnnotations %~ ((anno, ts):))
   AddTagTo mbSpanId tagName metadata -> do
     i <- maybe (pure 0) getIndexFor mbSpanId
-    modify (spans . ix i . spanTags %~ ((tagName, metadata):))
+    modify (spans . ix i . spanTags %~ ((tagName, display metadata):))
   GetCurrentSpan -> do
     gets $ preview (spans . ix 0)
   GetTraceId -> gets _rootId
@@ -128,7 +129,7 @@ addAnnotation = addAnnotationTo Nothing
 addTagToSpan :: Breadcrumbs :> es => SpanID -> Text -> Text -> Eff es ()
 addTagToSpan sId = addTagTo (Just sId)
 
-addTag :: Breadcrumbs :> es => Text -> Text -> Eff es ()
+addTag :: Display a => Breadcrumbs :> es => Text -> a -> Eff es ()
 addTag = addTagTo Nothing
 
 getIndexFor :: SpanID -> Eff (State BreadcrumbTrail : es) Int

@@ -28,6 +28,7 @@ common common-options
     , effectful-th
     , aeson
     , text
+    , text-display
     , microlens
     , microlens-th
     , microlens-mtl
