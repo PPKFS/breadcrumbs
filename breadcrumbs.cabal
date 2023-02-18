@@ -1,6 +1,6 @@
 cabal-version:       3.0
 name:                breadcrumbs
-version:             0.1.0.0
+version:             1.0.0.0
 synopsis:            See README for more info
 description:
     See README for more info.
@@ -9,13 +9,12 @@ homepage:            https://github.com/PPKFS/breadcrumbs
 bug-reports:         https://github.com/PPKFS/breadcrumbs/issues
 license:             MIT
 license-file:        LICENSE
-author:              Avery
-maintainer:          Avery <thecommunistduck@hotmail.co.uk>
-copyright:           2022 Avery
-category:            prelude
+author:              Avery Dangerous Garnett
+maintainer:          ppkfs@outlook.com
+copyright:           2022-2023 Avery
+category:            Logging
 build-type:          Simple
 extra-doc-files:     README.md
-                     CHANGELOG.md
 
 source-repository head
   type:                git
@@ -66,4 +65,6 @@ common common-options
 library
   import:              common-options
   hs-source-dirs:      src
-  exposed-modules:     Breadcrumbs
+  exposed-modules:
+    Breadcrumbs
+    Breadcrumbs.Internal
