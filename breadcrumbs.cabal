@@ -30,10 +30,8 @@ common common-options
     , text-display
     , microlens
     , microlens-th
-    , microlens-mtl
-    , unordered-containers
     , bytestring
-    , base16-bytestring >= 1.0.0.0
+    , base16-bytestring
     , random
     , http-client
     , time
