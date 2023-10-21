@@ -22,7 +22,7 @@ import Data.List (findIndex)
 import Data.Text ( Text )
 import Data.Text.Display
 import Effectful ( type (:>), Effect, MonadIO(liftIO), Eff, IOE )
-import Effectful.Dispatch.Dynamic ( localSeqUnlift, reinterpret )
+import Effectful.Dispatch.Dynamic ( localSeqUnlift, reinterpret, HasCallStack )
 import Effectful.State.Static.Shared ( State, evalState, gets, modify )
 import Effectful.TH ( makeEffect )
 import Lens.Micro ( ix, (%~), (.~) )
@@ -112,22 +112,22 @@ runBreadcrumbs mbId = reinterpret (\e -> do
     pure a
 
 -- | Add an annotation to a specific `Span`.
-addAnnotationToSpan :: Breadcrumbs :> es => SpanID -> Text -> Eff es ()
+addAnnotationToSpan :: HasCallStack => Breadcrumbs :> es => SpanID -> Text -> Eff es ()
 addAnnotationToSpan sId = addAnnotationTo (Just sId)
 
 -- | Add an annotation to the current `Span`.
-addAnnotation :: Breadcrumbs :> es => Text -> Eff es ()
+addAnnotation :: HasCallStack => Breadcrumbs :> es => Text -> Eff es ()
 addAnnotation = addAnnotationTo Nothing
 
   -- | Add a tag to a specific `Span` (`Just`) in the breadcrumb trail.
-addTagToSpan :: Breadcrumbs :> es => SpanID -> Text -> Text -> Eff es ()
+addTagToSpan :: HasCallStack => Breadcrumbs :> es => SpanID -> Text -> Text -> Eff es ()
 addTagToSpan sId = addTagTo (Just sId)
 
   -- | Add a tag to the current `Span`.
-addTag :: Display a => Breadcrumbs :> es => Text -> a -> Eff es ()
+addTag :: HasCallStack => Display a => Breadcrumbs :> es => Text -> a -> Eff es ()
 addTag = addTagTo Nothing
 
-getIndexFor :: SpanID -> Eff (State BreadcrumbTrail : es) Int
+getIndexFor :: HasCallStack => SpanID -> Eff (State BreadcrumbTrail : es) Int
 getIndexFor sId = do
   s <- gets _spans
   case findIndex (\Span{..} -> _spanId == sId) s of
